@@ -852,6 +852,59 @@ STEXI
 Inject an NMI on the default CPU (x86/s390) or all CPUs (ppc64).
 
 ETEXI
+    {
+        .name       = "info_migrate",
+        .args_type  = "",
+        .params     = "",
+        .help       = "get migration info",
+        .cmd = hmp_info_migrate,
+    },
+
+    {
+        .name       = "migrate_pause",
+        .args_type  = "",
+        .params     = "",
+        .help       = "pause migration",
+        .cmd = hmp_migrate_pause,
+    },
+
+    {
+        .name       = "migrate_resume",
+        .args_type  = "",
+        .params     = "",
+        .help       = "resume migration",
+        .cmd = hmp_migrate_resume,
+    },
+
+    {
+        .name       = "gft_member_live_mig",
+        .args_type  = "detach:-d,blk:-b,inc:-i,cuju:-c,uri:s",
+        .params     = "[-d] [-b] [-i] [-c] uri",
+        .help       = "do live migration memory backup and pause VM (using -d to not wait for completion)"
+		      "\n\t\t\t -b for migration without shared storage with"
+		      " full copy of disk\n\t\t\t -i for migration without "
+		      "\n\t\t\t -c enter cuju ft mode"
+		      "shared storage with incremental copy of disk "
+		      "(base image shared between src and destination)",
+        .cmd        = hmp_gft_member_live_mig,
+    },
+
+    {
+        .name       = "gft_add_member",
+        .args_type  = "master_host_ip:s,master_host_gft_port:i,master_mac:s,slave_host_ip:s,slave_host_ft_port:i",
+        .params     = "master_host_ip master_host_gft_port master_mac slave_host_ip slave_host_ft_port",
+        .help       = "add member which is already done live migration to GFT",
+        .cmd = hmp_gft_add_member,
+    },
+
+    {
+        .name       = "gft_add_backup",
+        .args_type  = "slave_host_ip:s,slave_incoming_port:i",
+        .params     = "slave_host_ip slave_incoming_port",
+        .help       = "add backup VM to the pool. When GFT member failed, it will find a VM from the backup VMs pool to rebuild fault tolerance",
+        .cmd = hmp_gft_add_backup,
+    },
+
 
     {
         .name       = "ringbuf_write",
@@ -1810,3 +1863,46 @@ STEXI
 @findex cuju-adjust-epoch
 Adjust epoch size in cuju-ft
 ETEXI
+
+    {
+        .name       = "gft_add_host",
+        .args_type  = "gft_id:i,master_host_ip:s,master_host_gft_port:i,master_mac:s,slave_host_ip:s,slave_host_ft_port:i",
+        .params     = "gft_id master_host_ip master_host_gft_port master_mac slave_host_ip slave_host_ft_port",
+        .help       = "add a master/slave pair to group ft",
+        .cmd = hmp_gft_add_host,
+    },
+
+STEXI
+@item gft_add_host gft_id master_host_ip master_host_gft_port master_mac slave_host_ip slave_host_ft_port
+@findex gft_add_host
+Add one master/slave pair to group ft.
+ETEXI
+
+    {
+        .name       = "gft_init",
+        .args_type  = "",
+        .params     = "",
+        .help       = "add a master/slave pair to group ft",
+        .cmd = hmp_gft_init,
+    },
+
+STEXI
+@item gft_init
+@findex gft_init
+Start group ft after gft_add_host.
+ETEXI
+
+    {
+        .name       = "gft_add_host2",
+        .args_type  = "gft_id:i,master_host_ip:s,master_host_gft_port:i,master_mac:s,slave_host_ip:s,slave_host_ft_port:i,slave_host_join_port:i",
+        .params     = "gft_id master_host_ip master_host_gft_port master_mac slave_host_ip slave_host_ft_port slave_host_join_port",
+        .help       = "add a master/slave pair to group ft with slave ft join port",
+        .cmd = hmp_gft_add_host2,
+    },
+
+STEXI
+@item gft_add_host2 gft_id master_host_ip master_host_gft_port master_mac slave_host_ip slave_host_ft_port slave_host_join_port
+@findex gft_add_host
+Add one master/slave pair to group ft.
+ETEXI
+

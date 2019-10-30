@@ -37,10 +37,25 @@
 #include "qemu/cutils.h"
 #include "qemu/error-report.h"
 #include "hw/intc/intc.h"
+#include "migration/migration.h"
+#include "migration/group_ft.h"
 
 #ifdef CONFIG_SPICE
 #include <spice/enums.h>
 #endif
+
+extern void qmp_migrate_resume(void);
+extern void qmp_migrate_pause(void);
+
+extern void gft_reset_all(void);
+extern void qmp_gft_add_member(void);
+extern void qmp_gft_add_backup(const char *slave_host_ip,
+                        int slave_incoming_port,
+                        Error **errp);
+extern int is_gft_new_member;
+extern bool is_gft_adding_new_member;
+extern int group_ft_members_size;
+extern int group_ft_members_size_tmp;
 
 static void hmp_handle_error(Monitor *mon, Error **errp)
 {
@@ -150,6 +165,7 @@ void hmp_info_mice(Monitor *mon, const QDict *qdict)
     qapi_free_MouseInfoList(mice_list);
 }
 
+extern enum GFT_STATUS gft_status;
 void hmp_info_migrate(Monitor *mon, const QDict *qdict)
 {
     MigrationInfo *info;
@@ -158,6 +174,17 @@ void hmp_info_migrate(Monitor *mon, const QDict *qdict)
     info = qmp_query_migrate(NULL);
     caps = qmp_query_migrate_capabilities(NULL);
 
+    switch(gft_status){
+        case GFT_PRE:
+            monitor_printf(mon,"GFT STATUS PRE\n");
+            break;
+        case GFT_START:
+            monitor_printf(mon,"GFT STATUS START\n");
+            break;
+        case GFT_WAIT:
+            monitor_printf(mon,"GFT STATUS WAIT\n");
+            break;
+    }
     /* do not display parameters during setup */
     if (info->has_status && caps) {
         monitor_printf(mon, "capabilities: ");
@@ -2592,6 +2619,158 @@ void hmp_cuju_adjust_epoch(Monitor *mon, const QDict *qdict)
     qmp_cuju_adjust_epoch(epoch, &err);
     if (err) {
         error_report_err(err);
+        return;
+    }
+}
+
+void hmp_gft_add_host(Monitor *mon, const QDict *qdict)
+{
+    int gft_id = qdict_get_int(qdict, "gft_id");
+    const char *master_host_ip = qdict_get_str(qdict, "master_host_ip");
+    int master_host_gft_port = qdict_get_int(qdict, "master_host_gft_port");
+    const char *master_mac = qdict_get_str(qdict, "master_mac");
+    const char *slave_host_ip = qdict_get_str(qdict, "slave_host_ip");
+    int slave_host_ft_port = qdict_get_int(qdict, "slave_host_ft_port");
+
+    Error *err = NULL;
+
+    qmp_gft_add_host(gft_id,
+                     master_host_ip,
+                     master_host_gft_port,
+                     master_mac,
+                     slave_host_ip,
+                     slave_host_ft_port,
+                     &err);
+    if (err) {
+        monitor_printf(mon, "gft_add_host: %s\n", error_get_pretty(err));
+        error_free(err);
+        return;
+    }
+}
+
+void hmp_gft_add_host2(Monitor *mon, const QDict *qdict)
+{
+    int gft_id = qdict_get_int(qdict, "gft_id");
+    const char *master_host_ip = qdict_get_str(qdict, "master_host_ip");
+    int master_host_gft_port = qdict_get_int(qdict, "master_host_gft_port");
+    const char *master_mac = qdict_get_str(qdict, "master_mac");
+    const char *slave_host_ip = qdict_get_str(qdict, "slave_host_ip");
+    int slave_host_ft_port = qdict_get_int(qdict, "slave_host_ft_port");
+    int slave_host_join_port = qdict_get_int(qdict, "slave_host_join_port");
+
+    Error *err = NULL;
+
+    qmp_gft_add_host2(gft_id,
+                     master_host_ip,
+                     master_host_gft_port,
+                     master_mac,
+                     slave_host_ip,
+                     slave_host_ft_port,
+                     slave_host_join_port,
+                     &err);
+    if (err) {
+        monitor_printf(mon, "gft_add_host2: %s\n", error_get_pretty(err));
+        error_free(err);
+        return;
+    }
+}
+
+void hmp_gft_init(Monitor *mon, const QDict *qdict)
+{
+    Error *err = NULL;
+
+    qmp_gft_leader_init(&err);
+    if (err) {
+        monitor_printf(mon, "gft_init: %s\n", error_get_pretty(err));
+        error_free(err);
+        return;
+    }
+}
+
+void hmp_migrate_pause(Monitor *mon , const QDict *qdict){
+    qmp_migrate_pause();
+}
+
+void hmp_migrate_resume(Monitor *mon, const QDict *qdict){
+    qmp_migrate_resume();
+}
+
+void hmp_gft_member_live_mig(Monitor *mon, const QDict *qdict){
+    is_gft_new_member = 1;
+    bool detach = qdict_get_try_bool(qdict, "detach", false);
+    bool blk = qdict_get_try_bool(qdict, "blk", false);
+    bool inc = qdict_get_try_bool(qdict, "inc", false);
+    bool cuju = qdict_get_try_bool(qdict, "cuju", false);
+    const char *uri = qdict_get_str(qdict, "uri");
+    Error *err = NULL;
+
+    qmp_migrate(uri, !!blk, blk, !!inc, inc, false, false, !!cuju, cuju, &err);
+    if (err) {
+        error_report_err(err);
+        return;
+    }
+
+    if (!detach && !cuju) {
+        HMPMigrationStatus *status;
+
+        if (monitor_suspend(mon) < 0) {
+            monitor_printf(mon, "terminal does not allow synchronous "
+                           "migration, continuing detached\n");
+            return;
+        }
+
+        status = g_malloc0(sizeof(*status));
+        status->mon = mon;
+        status->is_block_migration = blk || inc;
+        status->timer = timer_new_ms(QEMU_CLOCK_REALTIME, hmp_migrate_status_cb,
+                                          status);
+        timer_mod(status->timer, qemu_clock_get_ms(QEMU_CLOCK_REALTIME));
+    }
+}
+
+void hmp_gft_add_member(Monitor *mon, const QDict *qdict){
+    //int gft_id = qdict_get_int(qdict, "gft_id");
+    const char *master_host_ip = qdict_get_str(qdict, "master_host_ip");
+    int master_host_gft_port = qdict_get_int(qdict, "master_host_gft_port");
+    const char *master_mac = qdict_get_str(qdict, "master_mac");
+    const char *slave_host_ip = qdict_get_str(qdict, "slave_host_ip");
+    int slave_host_ft_port = qdict_get_int(qdict, "slave_host_ft_port");
+
+    int new_member_gft_id = group_ft_members_size;
+    Error *err = NULL;
+    qmp_gft_add_member();
+    is_gft_adding_new_member = 1;
+    gft_status = GFT_WAIT;
+    gft_reset_all();
+    qmp_gft_add_host(new_member_gft_id,
+                     master_host_ip,
+                     master_host_gft_port,
+                     master_mac,
+                     slave_host_ip,
+                     slave_host_ft_port,
+                     &err);
+    if (err) {
+        monitor_printf(mon, "gft_add_host: %s\n", error_get_pretty(err));
+        error_free(err);
+        return;
+    }
+    printf("%s add host finish\n",__func__);
+    group_ft_members_size = group_ft_members_size_tmp;
+    qmp_gft_leader_init(&err);
+}
+
+void hmp_gft_add_backup(Monitor *mon, const QDict *qdict){
+    const char *slave_host_ip = qdict_get_str(qdict, "slave_host_ip");
+    //int slave_host_gft_port = qdict_get_int(qdict, "slave_host_gft_port");
+    int slave_incoming_port = qdict_get_int(qdict, "slave_incoming_port");
+    Error *err = NULL;
+
+    qmp_gft_add_backup(slave_host_ip,
+                        slave_incoming_port,
+                        &err);
+    if (err) {
+        monitor_printf(mon, "gft_add_backup: %s\n", error_get_pretty(err));
+        error_free(err);
         return;
     }
 }

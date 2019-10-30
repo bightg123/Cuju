@@ -176,7 +176,24 @@ static ssize_t socket_put_buffer(void *opaque, const void *buf, size_t size)
     return len;
 }
 
-static int socket_get_buffer(void *opaque, uint8_t *buf, int64_t pos, int size)
+static int socket_put_buffer2(void *opaque, uint8_t *buf, int64_t pos, int size)
+{
+    QEMUFileSocket *s = opaque;
+    ssize_t len;
+
+    do {
+        len = send(s->fd, buf, size, 0);
+    } while (len == -1 && socket_error() == EINTR);
+
+    if (len == -1)
+        len = -socket_error();
+    if (len == 0)
+        len = -EINVAL;
+
+    return len;
+}
+
+static ssize_t socket_get_buffer(void *opaque, uint8_t *buf, int64_t pos, size_t size)
 {
     QEMUFileSocket *s = opaque;
     ssize_t len;
@@ -192,6 +209,13 @@ static int socket_get_buffer(void *opaque, uint8_t *buf, int64_t pos, int size)
         len = -EINVAL;
 
     return len;
+}
+
+static int socket_close(void *opaque)
+{
+    QEMUFileSocket *s = opaque;
+    g_free(s);
+    return 0;
 }
 static QTAILQ_HEAD(savevm_handlers, SaveStateEntry) savevm_handlers =
     QTAILQ_HEAD_INITIALIZER(savevm_handlers);
@@ -270,30 +294,30 @@ int qemu_ft_trans_cancel(QEMUFile *f)
 }
 
 static int socket_trans_get_buffer(void *opaque, uint8_t *buf, int64_t pos, size_t size)
-{   
+{
     QEMUFileSocketTrans *t = opaque;
     QEMUFileSocket *s = t->s;
     ssize_t len;
-    
+
     len = socket_get_buffer(s, buf, pos, size);
-    
+
     return len;
 }
 
 static ssize_t socket_trans_put_buffer(void *opaque, const void *buf, size_t size)
-{   
+{
     QEMUFileSocketTrans *t = opaque;
-    
+
     return socket_put_buffer(t->s, buf, size);
 }
 
 static int socket_trans_get_ready(void *opaque)
-{   
+{
     QEMUFileSocketTrans *t = opaque;
     QEMUFileSocket *s = t->s;
     QEMUFile *f = s->file;
     int ret;
-    
+
     ret = qemu_loadvm_state(f, 1);
     if (ret < 0) {
         fprintf(stderr,
@@ -302,18 +326,18 @@ static int socket_trans_get_ready(void *opaque)
         cuju_ft_mode = CUJU_FT_ERROR;
         goto out;
     }
-    
+
     ret = f->pos;
     f->pos = 0;
-    
+
     if (cuju_ft_mode == CUJU_FT_OFF)
         goto out;
-    
+
     if (cuju_ft_mode == CUJU_FT_ERROR) {
         qemu_announce_self();
         goto out;
     }
-    
+
     return 0;
 
 out:
@@ -415,6 +439,20 @@ static QEMUFile *qemu_fopen_bdrv(BlockDriverState *bs, int is_writable)
     return qemu_fopen_ops(bs, &bdrv_read_ops);
 }
 
+static const QEMUFileOps cuju_socket_ops = {
+    .put_buffer = socket_put_buffer2,
+    .get_buffer = socket_get_buffer,
+    .close =      socket_close
+};
+
+QEMUFile *qemu_fopen_socket(int fd)
+{
+    QEMUFileSocket *s = g_malloc0(sizeof(QEMUFileSocket));
+
+    s->fd = fd;
+    s->file = qemu_fopen_ops(s, &cuju_socket_ops);
+    return s->file;
+}
 
 /* QEMUFile timer support.
  * Not in qemu-file.c to not add qemu-timer.c as dependency to qemu-file.c
@@ -1225,7 +1263,7 @@ int qemu_savevm_state_iterate(QEMUFile *f, bool postcopy)
 {
     SaveStateEntry *se;
     int ret = 1;
-	
+
     trace_savevm_state_iterate();
     QTAILQ_FOREACH(se, &savevm_state.handlers, entry) {
         if (!se->ops || !se->ops->save_live_iterate) {
@@ -2770,8 +2808,8 @@ int qemu_savevm_trans_complete_precopy_advanced(struct CUJUFTDev *ftdev, int mor
     QJSON *vmdesc;
     SaveStateEntry *se;
     QEMUFile *f = ftdev->ft_dev_file;
- 
-    
+
+
 	vmdesc = qjson_new();
     json_prop_int(vmdesc, "page_size", TARGET_PAGE_SIZE);
     json_start_array(vmdesc, "devices");
@@ -2786,7 +2824,7 @@ int qemu_savevm_trans_complete_precopy_advanced(struct CUJUFTDev *ftdev, int mor
             continue;
 
         dirty = kvm_shmem_trackable_dirty_test(se->opaque);
-			
+
 		if ((strstr(se->idstr, "virtio-net"))||
             (strstr(se->idstr, "virtio-blk"))||
 			(!strncmp(se->idstr, "kvmclock", 8))||
@@ -2852,7 +2890,7 @@ int qemu_savevm_trans_complete_precopy_advanced(struct CUJUFTDev *ftdev, int mor
 void qemu_savevm_state_cancel(QEMUFile *f)
 {
     SaveStateEntry *se;
-    
+
     QTAILQ_FOREACH(se, &savevm_handlers, entry) {
         if (se->ops->save_live_setup) {
             se->ops->save_live_setup(f, se->opaque);
@@ -2904,7 +2942,7 @@ void qemu_savevm_state_complete_precopy_part2(QEMUFile *f) {
     int vmdesc_len;
     SaveStateEntry *se;
     bool in_postcopy = migration_in_postcopy(migrate_get_current());
- 
+
 	vmdesc = qjson_new();
     json_prop_int(vmdesc, "page_size", TARGET_PAGE_SIZE);
     json_start_array(vmdesc, "devices");

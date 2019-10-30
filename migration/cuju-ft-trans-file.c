@@ -7,7 +7,7 @@
  *  Wei-Chen Liao       <ms0472904@gmail.com>
  *  Po-Jui Tsao         <pjtsao@itri.org.tw>
  *  Yu-Shiang Lin       <YuShiangLin@itri.org.tw>
- *  
+ *
  *
  */
 
@@ -29,6 +29,7 @@
 #include "qom/cpu.h"
 #include "exec/memory.h"
 #include "exec/address-spaces.h"
+#include "migration/cuju-kvm-share-mem.h"
 #include "migration/cuju-ft-trans-file.h"
 #include "io/channel-socket.h"
 #include <linux/kvm.h>
@@ -41,9 +42,13 @@ int cuju_is_load = 0;
 QemuMutex cuju_load_mutex;
 QemuCond cuju_load_cond;
 
-extern void kvm_shmem_load_ram(void *buf, int size);
-extern void kvm_shmem_load_ram_with_hdr(void *buf, int size, void *hdr_buf, int hdr_size);
-
+//extern int qemu_loadvm_dev(QEMUFile *f);
+//extern void kvm_shmem_load_ram(void *buf, int size);
+//extern void kvm_shmem_load_ram_with_hdr(void *buf, int size, void *hdr_buf, int hdr_size);
+extern int is_gft_new_member, gft_backup_used, gft_backup_pool_size;
+extern GroupFTBackup group_ft_backup[GROUP_FT_MEMBER_MAX];
+extern int group_ft_master_sock;
+extern int resync_sock;
 char *blk_server = NULL;
 
 
@@ -302,7 +307,10 @@ static ssize_t cuju_ft_trans_put(void *opaque, void *buf, int size)
     assert(offset == size);
     return offset;
 }
-
+/**
+ * cuju_ft_trans_send_header : send header and state to slave
+ *
+ */
 int cuju_ft_trans_send_header(CujuQEMUFileFtTrans *s,
                         enum CUJU_QEMU_VM_TRANSACTION_STATE state,
                         uint32_t payload_len)
@@ -758,19 +766,31 @@ out:
 static int cuju_ft_trans_close(void *opaque)
 {
     Error *local_err = NULL;
-
     CujuQEMUFileFtTrans *s = opaque;
-    int ret;
+    int ret = -1;
 
+    GroupFTBackup *b = &group_ft_backup[gft_backup_used];
+    Error *err = NULL;
+    struct sockaddr_in addr;
+    socklen_t addr_len = sizeof(addr);
     printf("%s\n", __func__);
 
     trace_cuju_ft_trans_close();
-    ret = s->close(s->opaque);
-    if (s->is_sender)
-        g_free(s->buf);
 
+    if (!s){
+    /*
+    vm_stop_mig();
+    kvm_vm_ioctl_proxy((void *) s);
+    //kvm_vm_ioctl(kvm_state, KVMFT_RESTORE_PREVIOUS_EPOCH, (void *) s);
+    bdrv_drain_all();
+    bdrv_invalidate_cache_all(&local_err);
+    qemu_announce_self();
 
-    if (!s->is_sender) {
+    vm_start_mig();
+    */
+
+    }else if (!s->is_sender) {
+        ret = s->close(s->opaque);
         qemu_mutex_lock(&cuju_load_mutex);
         while (cuju_is_load == 1)
             qemu_cond_wait(&cuju_load_cond, &cuju_load_mutex);
@@ -804,9 +824,34 @@ static int cuju_ft_trans_close(void *opaque)
         qemu_announce_self();
 
         cuju_ft_mode = CUJU_FT_TRANSACTION_HANDOVER;
-        vm_start();
-        printf("%s vm_started.\n", __func__);
+        if(gft_backup_used >= gft_backup_pool_size){
+            vm_start();
+            printf("%s vm_started.\n", __func__);
+        }
+        else{
+            vm_start();
+            qemu_set_fd_handler(group_ft_master_sock,
+                        NULL,
+                        NULL,
+                        NULL);
+            do {
+                resync_sock = qemu_accept(group_ft_master_sock, (struct sockaddr *)&addr, &addr_len);
+                printf("%s accepted, resync_sock = %d\n", __func__, resync_sock);
+            } while (resync_sock == -1);
+
+            is_gft_new_member = 1;
+            char tmp[128];
+
+            cuju_ft_mode = CUJU_FT_INIT;
+            sprintf(tmp, "tcp:%s:%d,", b->slave_host_ip,
+                b->slave_incoming_port);
+            printf("%s\n", tmp);
+            qmp_migrate(tmp, false, false, false, false, false, false, true, true, &err);
+            //qmp_migrate(tmp, !!blk, blk, !!inc, inc, false, false, !!cuju, cuju, &err);
+            gft_backup_used++;
+        }
     }
+
 
     return ret;
 }
@@ -982,7 +1027,10 @@ clear:
     close(s->ram_hdr_fd);
     s->ram_hdr_fd = -1;
 }
-
+/**
+ * cuju_ft_tran_read_pages : handler for slave ram_fd
+ *
+ */
 void cuju_ft_trans_read_pages(void *opaque)
 {
     CujuQEMUFileFtTrans *s = opaque;
@@ -1165,7 +1213,12 @@ static const QEMUFileOps cuju_ops = {
     //.set_blocking = channel_set_blocking,
     //.get_return_path = channel_get_output_return_path,
 };
-
+/**
+ * cuju_qemu_fopen_ops_ft_trans : open qemu file and set is_sender
+ * set ft_trans_put_buffer / ft_trans_get_buffer , ft_trans_close, ft_trans_rate_limit
+ * state set to CUJU_QEMU_VM_TRANSACTION_INIT
+ * last_cmd set to CUJU_QEMU_VM_TRANSACTION_COMMIT
+ */
 QEMUFile *cuju_qemu_fopen_ops_ft_trans(void *opaque,
                                   CujuFtTransPutBufferFunc *put_buffer,
                                   CujuFtTransGetBufferFunc *get_buffer,

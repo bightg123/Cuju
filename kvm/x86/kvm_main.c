@@ -865,11 +865,11 @@ static int kvm_extend_dirty_bitmap(struct kvm_memory_slot *memslot)
 #ifndef CONFIG_S390
     size_t array_size;
     int ret;
- 
+
     ret = shared_page_array_extend(&memslot->epoch_dirty_bitmaps);
     if (ret < 0)
         return ret;
- 
+
     ret = shared_page_array_extend(&memslot->epoch_gfn_to_put_offs);
     if (ret < 0)
         return ret;
@@ -2082,7 +2082,7 @@ int kvm_write_guest_cached(struct kvm *kvm, struct gfn_to_hva_cache *ghc,
 
     if (kvm_is_error_hva(ghc->hva))
         return -EFAULT;
-    
+
     r = kvmft_page_dirty(kvm, ghc->gpa >> PAGE_SHIFT,
                             (void *)ghc->hva, 1, NULL);
 
@@ -3342,6 +3342,12 @@ static long kvm_vm_ioctl(struct file *filp,
                                   req.max_conn);
     break;
   }
+  case KVMFT_RESTORE_PREVIOUS_EPOCH: {
+    printk ( KERN_INFO "in kvmft before calling previous epoch \n",__func__);
+    r = -EFAULT;
+    r = kvmft_restore_previous_epoch(kvm,argp);
+    break;
+  }
 #ifdef KVM_COALESCED_MMIO_PAGE_OFFSET
 	case KVM_REGISTER_COALESCED_MMIO: {
 		struct kvm_coalesced_mmio_zone zone;
@@ -3476,6 +3482,11 @@ out_free_irq_routing:
         if (copy_from_user(&moff, argp, sizeof moff))
             goto out;
         r = kvmft_fire_timer(kvm->vcpus[0], (int)moff);
+        break;
+    }
+	case KVM_SHM_CANCEL_TIMER: {
+        r = 0;
+        kvm_shm_timer_cancel(kvm->vcpus[0]);
         break;
     }
     case KVMFT_SET_MASTER_SLAVE_SOCKETS: {
